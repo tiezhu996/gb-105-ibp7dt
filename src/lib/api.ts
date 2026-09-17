@@ -46,6 +46,7 @@ export const orderAPI = {
   getOrder: (id: number) => api.get(`/orders/${id}`),
   shipOrder: (id: number) => api.put(`/orders/${id}/ship`),
   receiveOrder: (id: number) => api.put(`/orders/${id}/receive`),
+  cancelOrder: (id: number) => api.put(`/orders/${id}/cancel`),
 }
 
 export const reviewAPI = {
