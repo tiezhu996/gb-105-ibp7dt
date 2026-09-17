@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Send,
   CheckCircle,
+  XCircle,
   MessageSquare,
 } from 'lucide-react'
 
@@ -20,6 +21,7 @@ const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: '待发货', color: 'text-orange-500 bg-orange-50' },
   shipped: { label: '待收货', color: 'text-blue-500 bg-blue-50' },
   completed: { label: '已完成', color: 'text-green-500 bg-green-50' },
+  cancelled: { label: '已取消', color: 'text-gray-500 bg-gray-100' },
 }
 
 const typeMap: Record<string, string> = {
@@ -71,6 +73,22 @@ export default function Profile() {
       loadData()
       alert('发货成功')
     } catch (error: any) {
+      // 无论成功失败都刷新一次，保证双方看到同一结果
+      loadData()
+      alert(error.response?.data?.error || '操作失败')
+    }
+  }
+
+  const handleCancel = async (orderId: number) => {
+    if (!window.confirm('确定取消这笔订单吗？取消后商品将恢复在售。')) return
+
+    try {
+      await orderAPI.cancelOrder(orderId)
+      loadData()
+      alert('订单已取消，商品已恢复在售')
+    } catch (error: any) {
+      // 与发货同时发生或重复取消时，以服务端最新状态为准刷新展示
+      loadData()
       alert(error.response?.data?.error || '操作失败')
     }
   }
@@ -138,6 +156,15 @@ export default function Profile() {
         </div>
 
         <div className="flex gap-2 mt-4 pt-4 border-t border-gray-100">
+          {order.status === 'pending' && (
+            <button
+              onClick={() => handleCancel(order.id)}
+              className="flex-1 py-2 bg-gray-100 text-gray-600 rounded-xl font-medium hover:bg-gray-200 transition-all flex items-center justify-center gap-1"
+            >
+              <XCircle className="w-4 h-4" />
+              取消订单
+            </button>
+          )}
           {isSeller && order.status === 'pending' && (
             <button
               onClick={() => handleShip(order.id)}

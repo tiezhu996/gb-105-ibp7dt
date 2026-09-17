@@ -30,29 +30,41 @@ router.post(
         return
       }
 
-      const result = db
-        .prepare(
-          `
-        INSERT INTO orders (product_id, buyer_id, seller_id, price, type, status)
-        VALUES (?, ?, ?, ?, ?, 'pending')
-      `,
-        )
-        .run(
-          product_id,
-          req.user?.id,
-          product.seller_id,
-          price || product.price,
-          type,
-        )
+      // 下单与占用商品放在同一事务中：只有仍在售的商品才能落单，
+      // 条件更新失败说明已被别人抢先下单，防止并发重复售出。
+      const placeOrder = db.transaction((): any => {
+        const lock = db
+          .prepare(
+            "UPDATE products SET status = 'sold' WHERE id = ? AND status = 'active'",
+          )
+          .run(product_id)
 
-      db.prepare('UPDATE products SET status = ? WHERE id = ?').run(
-        'sold',
-        product_id,
-      )
+        if (lock.changes === 0) return null
 
-      const order = db
-        .prepare('SELECT * FROM orders WHERE id = ?')
-        .get(result.lastInsertRowid)
+        const result = db
+          .prepare(
+            `
+          INSERT INTO orders (product_id, buyer_id, seller_id, price, type, status)
+          VALUES (?, ?, ?, ?, ?, 'pending')
+        `,
+          )
+          .run(
+            product_id,
+            req.user?.id,
+            product.seller_id,
+            price || product.price,
+            type,
+          )
+
+        return db.prepare('SELECT * FROM orders WHERE id = ?').get(result.lastInsertRowid)
+      })
+
+      const order = placeOrder()
+
+      if (!order) {
+        res.status(400).json({ success: false, error: '商品不可用' })
+        return
+      }
 
       res.status(201).json({ success: true, data: order })
     } catch (error) {
@@ -147,20 +159,100 @@ router.put(
         return
       }
 
-      if (order.status !== 'pending') {
+      // 只有待发货订单才能发货；与取消并发时，两条条件更新只有一条会生效，
+      // changes === 0 说明订单已被取消或已发货，商品保持售出不释放。
+      const result = db
+        .prepare(
+          "UPDATE orders SET status = 'shipped' WHERE id = ? AND status = 'pending'",
+        )
+        .run(id)
+
+      if (result.changes === 0) {
+        const latest: any = db.prepare('SELECT status FROM orders WHERE id = ?').get(id)
+        if (latest?.status === 'cancelled') {
+          res.status(400).json({ success: false, error: '订单已取消，不能发货' })
+          return
+        }
         res.status(400).json({ success: false, error: '订单状态不正确' })
         return
       }
-
-      db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(
-        'shipped',
-        id,
-      )
 
       res.json({ success: true, message: '发货成功' })
     } catch (error) {
       console.error(error)
       res.status(500).json({ success: false, error: '发货失败' })
+    }
+  },
+)
+
+router.put(
+  '/:id/cancel',
+  authenticateToken,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { id } = req.params
+
+      const order: any = db
+        .prepare('SELECT * FROM orders WHERE id = ?')
+        .get(id)
+
+      if (!order) {
+        res.status(404).json({ success: false, error: '订单不存在' })
+        return
+      }
+
+      // 买家和卖家都可以在待发货时取消订单
+      if (order.buyer_id !== req.user?.id && order.seller_id !== req.user?.id) {
+        res.status(403).json({ success: false, error: '无权限操作' })
+        return
+      }
+
+      // 已发货、已完成或已取消的订单都不能再取消
+      if (order.status === 'shipped' || order.status === 'completed') {
+        res.status(400).json({ success: false, error: '订单已发货，不能取消' })
+        return
+      }
+      if (order.status === 'cancelled') {
+        res.status(400).json({ success: false, error: '订单已取消，请勿重复操作' })
+        return
+      }
+
+      // 取消与恢复在售放在同一事务：
+      // 1. 只有待发货订单能改为已取消，与发货并发时两条更新只有一条生效；
+      // 2. 只恢复当前仍为售出的商品，重复取消/失败重试都不会二次释放；
+      // 3. 任一步骤失败整体回滚，不会出现订单取消了但商品未恢复（或反之）。
+      const cancelOrder = db.transaction((): boolean => {
+        const cancel = db
+          .prepare(
+            "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+          )
+          .run(id)
+
+        if (cancel.changes === 0) return false
+
+        db.prepare(
+          "UPDATE products SET status = 'active' WHERE id = ? AND status = 'sold'",
+        ).run(order.product_id)
+
+        return true
+      })
+
+      const cancelled = cancelOrder()
+
+      if (!cancelled) {
+        const latest: any = db.prepare('SELECT status FROM orders WHERE id = ?').get(id)
+        if (latest?.status === 'shipped' || latest?.status === 'completed') {
+          res.status(400).json({ success: false, error: '订单已发货，不能取消' })
+          return
+        }
+        res.status(400).json({ success: false, error: '订单状态不正确' })
+        return
+      }
+
+      res.json({ success: true, message: '订单已取消，商品已恢复在售' })
+    } catch (error) {
+      console.error(error)
+      res.status(500).json({ success: false, error: '取消订单失败' })
     }
   },
 )

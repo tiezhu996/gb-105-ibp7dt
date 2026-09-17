@@ -45,6 +45,7 @@ export const orderAPI = {
   getSellerOrders: () => api.get('/orders/seller'),
   getOrder: (id: number) => api.get(`/orders/${id}`),
   shipOrder: (id: number) => api.put(`/orders/${id}/ship`),
+  cancelOrder: (id: number) => api.put(`/orders/${id}/cancel`),
   receiveOrder: (id: number) => api.put(`/orders/${id}/receive`),
 }
 
